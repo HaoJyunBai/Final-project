@@ -607,6 +607,9 @@ print(gg_confusion_matrix)
 
 
 ```
+
+
+
 <font size="4">random forest model</font>
 
 Model building: 
@@ -637,6 +640,7 @@ print(conf_matrix_rf)
 ```
 
 
+
 Confusion matrix:
 
 This work slightly better than logistic regression for now, although it still has low accuracy. 
@@ -663,6 +667,11 @@ gg_confusion_matrix <- ggplot(cm_table, aes(x = Reference, y = Prediction, fill 
 print(gg_confusion_matrix)
 
 ```
+
+
+
+
+
 <font size="4">SVM model</font>
 
 Model building: 
@@ -712,6 +721,10 @@ gg_svm_confusion_matrix <- ggplot(svm_cm_df, aes(x = Actual, y = Prediction, fil
 
 print(gg_svm_confusion_matrix)
 ```
+
+
+
+
 <font size="4">XGboost model</font>
 
 
