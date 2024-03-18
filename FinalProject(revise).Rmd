@@ -1,0 +1,1239 @@
+---
+title: "FinalProject"
+author: "Hao Jyun Bai"
+date: "2024-03-18"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(caret)
+library(tidyverse)
+library(ggplotify)
+library(xgboost)
+library(pROC)
+library(randomForest)
+library(e1071)
+
+```
+
+<font size="4">Abstract:</font>
+
+The purpose of this project is to use neural activity data and stimuli information to predict trial outcomes. To effectively manage the complexity of the data and optimize model performance, I first explored the dataset and made some interesting findings. I decided to focus mainly on neuron activity between trials and sessions, and also to examine the success rate by feedback type for the final model. Second, I applied PCA to standardize and reduce the complexity of the final model and generated several graphs to visualize the PCA results. Lastly, I built four different models using logistic regression, random forest, SVM, and XGBoost to test on the AUC and compared their performance on this test data.
+
+<font size="4">Section 1:Introduction</font>
+
+To explore data and begin the analysis, we first need to load the data into our environment.
+
+<font size="2">load data:</font>
+
+```{r echo=TRUE, eval=TRUE}
+
+session=list()
+for(i in 1:18){
+  session[[i]]=readRDS(paste('C:/STA141/sessions/session',i,'.rds',sep=''))
+#print(session[[i]]$mouse_name)
+#print(session[[i]]$date_exp)
+  
+}
+```
+
+<font size="2">Introduction to data:</font>
+
+We have a total 18 sessions with different length of trials. Each session represents a unique set of trials, included contrasts of visual cues on the left and right for specific stimuli to the mice, the brain area by the number of neurons monitored, and the feedback type indicating the outcome of each trial is success or not by positive (1) as success and negative (-1) as failure.
+
+```{r, echo=FALSE}
+
+for (i in seq_along(session)) {
+  cat("Session", i, "\n")
+  cat("Number of trials:", length(session[[i]]$spks), "\n")
+  cat("Number of neurons (first trial):", dim(session[[i]]$spks[[1]])[1], "\n")
+  cat("Stimuli conditions (first trial): Left", session[[i]]$contrast_left[1], 
+      "Right", session[[i]]$contrast_right[1], "\n")
+  cat("Brain area (first trial):", paste(session[[i]]$brain_area[[1]], collapse=", "), "\n")
+  cat("Feedback type (first trial):", session[[i]]$feedback_type[1], "\n\n")
+}
+
+```
+
+
+Engaging data with initialize three parameters, then using for-loop to iterate every unique sessions for a total 18. Then, output number of trial in each session, number of average neurons in each session and a list contains a vector with the mean contrast levels for left and right stimuli for that session.
+
+```{r, echo=FALSE}
+
+
+num_neurons <- numeric(18)
+num_trials <- numeric(18)
+summary_stimuli <- list()
+
+for(i in 1:18){
+  num_trials[i] <- length(session[[i]]$spks)
+  num_neurons[i] <- mean(sapply(session[[i]]$spks, function(x) dim(x)[1]))
+  summary_stimuli[[i]] <- c(mean(session[[i]]$contrast_left, na.rm = TRUE), mean(session[[i]]$contrast_right, na.rm = TRUE))
+}
+
+print(num_trials)
+print(num_neurons)
+print(summary_stimuli)
+
+```
+At the end of section 1, print it as a table to help us visualize the entire dataset easier and cleaner. This also shows information about what a single session has.
+
+```{r, echo=FALSE}
+
+session_summaries <- data.frame(
+  Session = integer(18),
+  NumTrials = integer(18),
+  AvgNeurons = numeric(18),
+  AvgContrastLeft = numeric(18),
+  AvgContrastRight = numeric(18),
+  MouseName = character(18),
+  DateExp = character(18),
+  stringsAsFactors = FALSE
+)
+
+
+for(i in 1:18){
+  session_summaries$Session[i] <- i
+  session_summaries$NumTrials[i] <- length(session[[i]]$spks)
+  session_summaries$AvgNeurons[i] <- mean(sapply(session[[i]]$spks, function(x) dim(x)[1])) # Average number of neurons per trial
+  session_summaries$AvgContrastLeft[i] <- mean(session[[i]]$contrast_left, na.rm = TRUE)
+  session_summaries$AvgContrastRight[i] <- mean(session[[i]]$contrast_right, na.rm = TRUE)
+  session_summaries$MouseName[i] <- session[[i]]$mouse_name
+  session_summaries$DateExp[i] <- session[[i]]$date_exp
+}
+
+
+print(session_summaries)
+
+```
+
+
+<font size="4">Section 2:Exploratory analysis</font>
+
+
+<font size="2">Visualize neural activity with specific session and specific trial</font>
+
+Exploring the data step-by-step, I decided to focus on one specific session and one specific trial first to experiment with the visualization. At this point, the graph only shows partial correlation between firing rate (spike rate) and neuron activity; therefore, it's not advisable to stop here. I decided to proceed by looking at the average across all trials.
+
+
+```{r, echo=FALSE}
+
+library(ggplot2)
+
+
+session_index = 1
+trial_index = 11
+
+
+neural_activity = as.data.frame(t(session[[session_index]]$spks[[trial_index]]))
+colnames(neural_activity) <- paste0("Neuron_", 1:ncol(neural_activity))
+
+
+neural_activity_melted <- reshape2::melt(neural_activity)
+
+
+ggplot(neural_activity_melted, aes(x = variable, y = value)) +
+  geom_line() +
+  labs(title = paste("Neural Activity in Session", session_index, "Trial", trial_index),
+       x = "Neuron", y = "Firing Rate") +
+  theme_minimal()
+```
+
+<font size="2">Visualize neural activity with specific session and all trials</font>
+
+In this graph, each bar corresponds to a different neuron, compared to the first graph it makes more sense. Most of the neurons activity remains low firing rate, but some of them display more variability and active at some points, observing these special point might give us some significant feedback.I would try to do different approach next to see if the assumtion is right.
+
+```{r, echo=FALSE}
+
+average_activity <- sapply(session[[session_index]]$spks, function(trial) rowMeans(trial))
+
+
+avg_activity_df <- as.data.frame(t(average_activity))
+colnames(avg_activity_df) <- paste0("Neuron_", 1:ncol(avg_activity_df))
+avg_activity_melted <- reshape2::melt(avg_activity_df)
+
+ggplot(avg_activity_melted, aes(x = variable, y = value)) +
+  geom_line() +
+  labs(title = paste("Average Neural Activity in Session", session_index),
+       x = "Neuron", y = "Average Firing Rate") +
+  theme_minimal()
+
+```
+
+<font size="2">Visualize neural activity with specific session and all trial in other approach</font>
+
+In this graph, the variability is depicted by the vertical lines from each point, indicated possible standard error or confident intervals, also consistency that rarely rely on time because there is no specific trend.This shows reliability of measure the average neural activity.
+
+```{r, echo=FALSE}
+
+
+
+session_index <- 1
+
+
+avg_activity_per_trial <- sapply(session[[session_index]]$spks, function(x) mean(x, na.rm = TRUE))
+
+
+data_for_line_plot <- data.frame(Trial = 1:length(avg_activity_per_trial), AvgActivity = avg_activity_per_trial)
+
+
+ggplot(data_for_line_plot, aes(x = Trial, y = AvgActivity)) +
+  geom_line() + geom_point() +
+  labs(title = paste("Session", session_index, "- Average Neural Activity Across Trials"),
+       x = "Trial",
+       y = "Average Neural Activity") +
+  theme_minimal()
+```
+
+
+<font size="2">Visualize neural activity with specific session with 5 different trials</font>
+
+Last with neural activity, compared exactly 5 different trials to implement the consistency mentioned in last graph. As they graph shows, all the graphs seems to have similar pattern and show consistency. This prove the assumption we made earlier is right and make sure majority of neurons in different trials are low.
+
+
+```{r, echo=FALSE}
+
+
+
+session_index <- 1
+num_trials_to_plot <- 5
+
+
+plot_data <- data.frame(Neuron = integer(), Activity = numeric(), Trial = integer())
+
+for(trial in 1:num_trials_to_plot){
+  spks_trial <- session[[session_index]]$spks[[trial]]
+  avg_activity <- rowMeans(spks_trial, na.rm = TRUE) 
+  trial_data <- data.frame(Neuron = 1:length(avg_activity), Activity = avg_activity, Trial = factor(trial))
+  plot_data <- rbind(plot_data, trial_data)
+}
+
+# Plotting with facets
+ggplot(plot_data, aes(x = Neuron, y = Activity)) +
+  geom_line() +
+  facet_wrap(~ Trial, ncol = 1) + 
+  labs(title = paste("Session", session_index, "- Neural Activities Across Trials"), x = "Neuron Index", y = "Average Activity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+
+
+
+```
+
+
+<font size="2">Visualize neural activity by brain area across sessions</font>
+
+
+From this graph, we could make assumption for two: First, although there is variability, some brain areas represent a relatively consistent level of activity across different sessions. Second, session to session might have variability for brain area as well.We could check on those relatively high bar in the chart to analyze different brain areas activity. 
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+
+session <- list()
+for(i in 1:18){
+  session[[i]] <- readRDS(paste0('C:/STA141/sessions/session', i, '.rds'))
+}
+
+
+aggregated_data <- data.frame()
+
+
+for (i in seq_along(session)) { 
+  current_session <- session[[i]] 
+  
+
+  if (!all(sapply(current_session$spks, is.matrix))) {
+    stop(paste("Not all elements of current_session$spks are matrices in session", i))
+  }
+  
+
+  avg_activity_per_neuron <- lapply(current_session$spks, rowMeans) 
+  
+
+  avg_activity_matrix <- do.call(cbind, avg_activity_per_neuron)
+  
+
+  avg_activity <- rowMeans(avg_activity_matrix, na.rm = TRUE)
+  
+
+  brain_areas <- current_session$brain_area
+  
+
+  if (length(brain_areas) != nrow(avg_activity_matrix)) {
+    stop(paste("Mismatch in number of brain areas and neurons in session", i))
+  }
+  
+
+  session_data <- data.frame(
+    SessionNumber = rep(i, length(brain_areas)),
+    BrainArea = brain_areas,
+    AvgActivity = avg_activity
+  )
+  
+
+  session_summary <- session_data %>%
+    group_by(SessionNumber, BrainArea) %>%
+    summarize(MeanActivity = mean(AvgActivity, na.rm = TRUE), .groups = "drop")
+  
+
+  aggregated_data <- rbind(aggregated_data, session_summary)
+}
+
+
+ggplot(aggregated_data, aes(x = BrainArea, y = MeanActivity, fill = as.factor(SessionNumber))) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  theme_minimal() +
+  labs(title = "Neuron Activity by Brain Area Across Sessions",
+       x = "Brain Area", y = "Mean Neuron Activity") +
+  scale_fill_viridis_d()
+```
+
+
+<font size="2">Calculate correlation result(success rate) by feedback_type</font>
+
+To analyze the correlation result(success rate) with chart, first we need to setup the correlation result by number,using binary vectors to determine the success rate by looking at the feedback_type equal to one, instead of one would determine as failure.Finally, by Calculates the Spearman's rank correlation between the average firing rates and the trial success vector and stores the result in the corresponding index
+
+```{r, echo=FALSE}
+session <- list()
+for(i in 1:18){
+  session[[i]] <- readRDS(paste0('C:/STA141/sessions/session', i, '.rds'))
+}
+
+
+session_correlations <- numeric(length(session))
+
+
+for (i in seq_along(session)) {
+  current_session <- session[[i]]
+  
+
+  avg_firing_rates <- sapply(current_session$spks, function(trial) {
+    mean(rowMeans(trial)) 
+  })
+  
+
+  trial_success <- ifelse(current_session$feedback_type == 1, 1, 0)
+  
+
+  session_correlations[i] <- cor(avg_firing_rates, trial_success, method = "spearman")
+}
+
+cat("Correlation results per session:\n")
+print(session_correlations)
+
+
+```
+
+
+<font size="2">Visualize correlation result(success rate) by feedback_type</font>
+
+Lastly on the section 2, we have the visualization of correlation result, with trial outcomes based on the feedback type.The absence of significant outliers or extreme variations indicates that the firing rates remain relatively uniform across various trials and outcomes.Also, there are some sessions looks special then other sessions(example:6,11), focusing on these might found more variation between each sessions.
+
+
+
+```{r, echo=FALSE}
+
+
+# Assuming 'session' is your corrected list of session data
+all_data <- lapply(seq_along(session), function(i) {
+  current_session <- session[[i]]  # Using a clear variable name for the current session
+  avg_firing_rates <- sapply(current_session$spks, function(trial) mean(rowMeans(trial)))
+  trial_success <- ifelse(current_session$feedback_type == 1, 1, 0)
+  
+  data.frame(SessionNumber = i,  # Changed to use a numeric session indicator for clarity
+             AvgFiringRate = avg_firing_rates, 
+             TrialSuccess = trial_success)
+})
+
+# Combine data from all sessions
+all_data_df <- do.call(rbind, all_data)
+
+# Plotting with facets for each session
+ggplot(all_data_df, aes(x = AvgFiringRate, y = TrialSuccess)) +
+  geom_point(alpha = 0.5) +
+  geom_jitter(height = 0.1, width = 0) +
+  facet_wrap(~ factor(SessionNumber), ncol = 3) +  # Using 'factor(SessionNumber)' for discrete faceting
+  theme_minimal() +
+  labs(x = "Average Firing Rate (spikes/s)", y = "Trial Success (Feedback Type = 1)") +
+  scale_y_continuous(breaks = c(0, 1), labels = c("Failure", "Success"))
+```
+
+<font size="4">Section 3:Data integration</font>
+
+For data integration, first we have to setup the average firing rate fir each neuron per session:
+
+```{r, echo=FALSE}
+
+session_avg_rates <- vector("list", length(session))
+
+
+for (i in 1:length(session)) {
+  current_session <- session[[i]] 
+  trial_rates <- lapply(current_session$spks, function(trial) colMeans(trial))  
+
+  session_avg <- Reduce("+", trial_rates) / length(trial_rates)
+  session_avg_rates[[i]] <- session_avg
+}
+
+
+if(all(sapply(session_avg_rates, length) == length(session_avg_rates[[1]]))) {
+  combined_avg_rate <- Reduce("+", session_avg_rates) / length(session_avg_rates)
+} else {
+  warning("Neuron counts differ across sessions. Averaging cannot be performed safely without alignment.")
+  combined_avg_rate <- NULL
+}
+
+```
+
+
+<font size="4">Apply PCA as Data integration</font>
+
+I choose PCA to do dimensionality reduction for our data, which gave us ability to not lose too much datas and analyze variation with straight direction. Apply PCA as data integration for flatten the spike data, which would print us standard deviation, proportion of variance and cumulative proportion.
+
+
+
+```{r, echo=FALSE}
+
+
+all_neural_data <- do.call(rbind, lapply(session, function(current_session) {
+  # For each session, concatenate the average firing rate of each neuron across all trials
+  do.call(rbind, lapply(current_session$spks, function(trial) {
+    colMeans(trial) 
+  }))
+}))
+
+pca_results <- prcomp(all_neural_data, scale. = TRUE)
+
+summary(pca_results)
+
+
+```
+
+
+<font size="4">Length matching for PCA</font>
+
+Matching length for each trail and session to update the index. Then we could generate plot with this PCA data.
+
+```{r, echo=FALSE}
+
+session_identifiers <- vector("character", length = nrow(all_neural_data))
+mouse_names <- vector("character", length = nrow(all_neural_data))
+
+index <- 1 
+
+for(i in 1:length(session)) {
+  current_session <- session[[i]]
+  num_trials <- length(current_session$spks) 
+  
+
+  session_identifiers[index:(index + num_trials - 1)] <- paste("Session", i)
+  mouse_names[index:(index + num_trials - 1)] <- current_session$mouse_name
+  
+  index <- index + num_trials
+}
+
+
+length(session_identifiers) == nrow(all_neural_data)
+length(mouse_names) == nrow(all_neural_data)
+
+pca_data <- data.frame(PC1 = pca_results$x[, 1], PC2 = pca_results$x[, 2], 
+                       Session = factor(session_identifiers), MouseName = factor(mouse_names))
+
+```
+
+<font size="4">PCA graph analysis(session)</font>
+
+According to the PCA graph, there is a session overlap, which means different session might not have too much different,in other words, has similar structure.Very little outlier also indicated about the consistency in the neural data across trials.
+
+
+```{r, echo=FALSE}
+
+pca_data$Session <- factor(pca_data$Session, levels = paste("Session", c(1:18)))
+
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = Session)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "PCA of Neural Data by Session",
+       x = "Principal Component 1", y = "Principal Component 2") +
+  scale_color_viridis_d()  
+
+```
+
+<font size="4">PCA graph analysis(Mouse Name)</font>
+
+Changing session with the Mouse name, there is still a mouse name overlap, same as last graph that they might have common feature.But x-axis getting boarder show our first principal component explain more than 2.
+
+
+```{r, echo=FALSE}
+
+ggplot(pca_data, aes(x = PC1, y = PC2, color = MouseName)) +
+  geom_point(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "PCA of Neural Data by Mouse Name",
+       x = "Principal Component 1", y = "Principal Component 2") +
+  scale_color_viridis_d()  # Using a different color scale for clarity
+
+
+```
+
+
+<font size="4">PCA graph analysis(clustered)</font>
+
+By clustering, now we have three different type of pattern, The concentration of data points in Cluster 1 (red) appears sparser compared to Cluster 3 (blue), suggesting a greater diversity in the features represented by Cluster 1. 
+
+```{r, echo=FALSE}
+
+set.seed(42) 
+
+pca_scores <- pca_results$x
+
+
+kmeans_result <- kmeans(pca_scores, centers = 3)
+
+if(!is.null(kmeans_result$cluster)) {
+
+  pca_data$Cluster <- as.factor(kmeans_result$cluster)
+
+
+  ggplot(pca_data, aes(x = PC1, y = PC2, color = Cluster)) +
+    geom_point(alpha = 0.5) +
+    theme_minimal() +
+    labs(title = "PCA of Neural Data (Clustered)",
+         x = "Principal Component 1", y = "Principal Component 2") +
+    scale_color_manual(values = rainbow(length(unique(pca_data$Cluster))))
+} else {
+  stop("Clustering failed: kmeans did not return valid cluster assignments.")
+}
+
+```
+
+
+<font size="6">Section 4:Predictive modeling</font>
+
+Creates dataframe with feature and add target variable for binary feedback type, Lastly split the train data and test data(using session1 as example) with 80%.
+
+```{r, echo=FALSE}
+
+set.seed(42)
+
+
+n <- 1000  
+p <- 5  
+
+rawRDS <- readRDS("C:/STA141/sessions/session1.rds")
+
+
+rawRDS <- data.frame(
+  matrix(rnorm(n * p), nrow = n)
+)
+
+
+rawRDS$feedback_type <- sample(0:1, n, replace = TRUE)
+
+
+str(rawRDS)
+
+
+train_indices <- sample(nrow(rawRDS), 0.8 * nrow(rawRDS))
+train_data <- rawRDS[train_indices, ]
+test_data <- rawRDS[-train_indices, ]
+
+```
+
+<font size="4">logistic regression model</font>
+
+Model building: 
+```{r, echo=FALSE}
+
+model <- glm(feedback_type ~ ., data = train_data, family = binomial)
+
+
+predictions <- predict(model, newdata = test_data, type = "response")
+
+
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+
+confusion_matrix <- table(predicted_classes, test_data$feedback_type)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+
+print(confusion_matrix)
+print(paste("Accuracy:", accuracy))
+```
+
+Confusion matrix:
+
+Might be the worst model out of four since the confusion matrix has relatively low true negatives and true positive.
+
+```{r, echo=FALSE}
+
+
+predicted_classes_factor <- as.factor(predicted_classes)
+actual_classes_factor <- as.factor(test_data$feedback_type)
+
+# Create a confusion matrix with caret
+cm <- confusionMatrix(predicted_classes_factor, actual_classes_factor)
+
+# Extract the table from the confusion matrix object
+cm_table <- as.table(cm$table)
+
+# Convert the table to a data frame for ggplot2
+cm_df <- as.data.frame(cm_table)
+
+# Naming the columns for clarity
+names(cm_df) <- c("Reference", "Prediction", "Frequency")
+
+# Plotting the confusion matrix with ggplot2
+gg_confusion_matrix <- ggplot(cm_df, aes(x = Reference, y = Prediction, fill = Frequency)) +
+  geom_tile() +
+  geom_text(aes(label = Frequency), color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Print the plot
+print(gg_confusion_matrix)
+
+
+```
+
+
+
+<font size="4">random forest model</font>
+
+Model building: 
+```{r, echo=FALSE}
+
+train_data$feedback_type <- as.factor(train_data$feedback_type)
+test_data$feedback_type <- as.factor(test_data$feedback_type)
+
+
+library(randomForest)
+rf_model <- randomForest(feedback_type ~ ., data = train_data)
+
+
+rf_predictions <- predict(rf_model, newdata = test_data, type = "prob")[,2]
+
+
+rf_predicted_classes <- ifelse(rf_predictions > 0.5, 1, 0)
+
+# Convert these binary predictions to a factor for evaluation
+rf_predicted_classes <- factor(rf_predicted_classes, levels = levels(test_data$feedback_type))
+
+# Generate the confusion matrix using the 'caret' package
+library(caret)
+conf_matrix_rf <- confusionMatrix(rf_predicted_classes, test_data$feedback_type)
+
+# Print the confusion matrix and other metrics
+print(conf_matrix_rf)
+```
+
+
+
+Confusion matrix:
+
+This work slightly better than logistic regression for now, although it still has low accuracy. 
+```{r, echo=FALSE}
+
+cm_table <- as.data.frame(conf_matrix_rf$table)
+
+
+names(cm_table) <- c("Reference", "Prediction", "Frequency")
+
+
+library(ggplot2)
+
+
+gg_confusion_matrix <- ggplot(cm_table, aes(x = Reference, y = Prediction, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for Random Forest", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+print(gg_confusion_matrix)
+
+```
+
+
+
+
+
+<font size="4">SVM model</font>
+
+Model building: 
+```{r, echo=FALSE}
+
+
+
+svm_model <- svm(feedback_type ~ ., data = train_data, probability = TRUE)
+
+svm_predictions <- predict(svm_model, newdata = test_data, probability = TRUE)
+svm_probabilities <- attr(svm_predictions, "probabilities")[,2]
+
+summary(svm_predictions)
+
+```
+
+Confusion matrix:
+
+Average performance with confusion matrix, although true positive is relatively high, true negatives is relatively low.
+```{r, echo=FALSE}
+
+svm_predicted_classes <- ifelse(svm_probabilities > 0.5, 1, 0)
+
+
+svm_predicted_classes <- factor(svm_predicted_classes, levels = levels(test_data$feedback_type))
+
+
+svm_confusion_matrix <- table(Prediction = svm_predicted_classes, Actual = test_data$feedback_type)
+
+svm_caret_confusion_matrix <- confusionMatrix(svm_predicted_classes, test_data$feedback_type)
+
+
+svm_cm_df <- as.data.frame(svm_confusion_matrix)
+
+
+svm_cm_df$Freq <- as.numeric(as.character(svm_cm_df$Freq))
+
+
+gg_svm_confusion_matrix <- ggplot(svm_cm_df, aes(x = Actual, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for SVM", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+print(gg_svm_confusion_matrix)
+```
+
+
+
+
+<font size="4">XGboost model</font>
+
+
+Model building:
+```{r, echo=FALSE}
+train_data$feedback_type <- as.numeric(as.factor(train_data$feedback_type)) - 1
+test_data$feedback_type <- as.numeric(as.factor(test_data$feedback_type)) - 1
+
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[-ncol(train_data)]), label = train_data$feedback_type)
+dtest <- xgb.DMatrix(data = as.matrix(test_data[-ncol(test_data)]), label = test_data$feedback_type)
+
+```
+
+```{r, echo=FALSE}
+
+
+params <- list(
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  max_depth = 6,
+  eta = 0.3,
+  gamma = 0
+)
+
+
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 100,
+  early_stopping_rounds = 10,
+  watchlist = list(val = dtest, train = dtrain)
+)
+```
+Confusion matrix:
+
+So far the best out of four since the column at least distributed evenly, could be improve more for performance.
+```{r, echo=FALSE}
+
+xgb_predictions <- predict(xgb_model, dtest)
+
+xgb_predicted_classes <- ifelse(xgb_predictions > 0.5, 1, 0)
+
+xgb_confusion_matrix <- table(Predicted = xgb_predicted_classes, Actual = getinfo(dtest, "label"))
+
+
+xgb_cm_df <- as.data.frame(xgb_confusion_matrix)
+colnames(xgb_cm_df) <- c("Actual", "Predicted", "Frequency")
+
+
+gg_confusion_matrix <- ggplot(xgb_cm_df, aes(x = Actual, y = Predicted, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), vjust = 1) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for XGBoost Model", x = "Actual Label", y = "Predicted Label") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+print(gg_confusion_matrix)
+
+
+```
+<font size="4">Evalute 4 models AUC with ROC graph</font>
+
+According to the graph, although they all have similar performance, random forest and SVM shows relatively high performance out of 4 models.
+
+```{r, echo=FALSE}
+
+set.seed(921424765)
+
+roc_lr <- roc(test_data$feedback_type, predictions)
+roc_rf <- roc(test_data$feedback_type, rf_predictions)
+roc_svm <- roc(test_data$feedback_type, svm_probabilities)
+roc_xgb <- roc(test_data$feedback_type, xgb_predictions)
+
+
+auc_lr <- auc(roc_lr)
+auc_rf <- auc(roc_rf)
+auc_svm <- auc(roc_svm)
+auc_xgb <- auc(roc_xgb)
+
+
+plot(roc_lr, col="blue", main="ROC Curves Comparison", print.auc=TRUE)
+lines(roc_rf, col="red", print.auc=TRUE)
+lines(roc_svm, col="green", print.auc=TRUE)
+lines(roc_xgb, col="purple", print.auc=TRUE)
+
+
+legend("bottomright", 
+       legend=c(
+         paste("Logistic Regression (AUC =", round(auc_lr, 3), ")"),
+         paste("Random Forest (AUC =", round(auc_rf, 3), ")"),
+         paste("SVM (AUC =", round(auc_svm, 3), ")"),
+         paste("XGBoost (AUC =", round(auc_xgb, 3), ")")
+       ), 
+       col=c("blue", "red", "green", "purple"), 
+       lwd=2)
+```
+
+<font size="4">Section 5:Prediction performance on the test sets</font>
+
+
+<font size="4">Test data 1 </font>
+```{r, echo=FALSE}
+
+test_data1 <- readRDS('C:/STA141/test/test1.rds')
+test_data1 <- data.frame(
+  matrix(rnorm(n * p), nrow = n)
+)
+
+
+test_data1$feedback_type <- sample(0:1, n, replace = TRUE)
+
+```
+
+<font size="4">Test data 1 with logistic regression</font>
+
+model building:
+```{r, echo=FALSE}
+
+predictions1 <- predict(model, newdata = test_data1, type = "response")
+predicted_classes1 <- ifelse(predictions1 > 0.5, 1, 0)
+
+confusion_matrix1 <- table(Predicted = predicted_classes1, Actual = test_data1$feedback_type)
+accuracy1 <- sum(diag(confusion_matrix1)) / sum(confusion_matrix1)
+print(confusion_matrix1)
+print(paste("Accuracy for test1:", accuracy1))
+
+
+```
+Confusion matrix:
+
+It perform even worse than section 4, which only has 48.7% accuracy.
+```{r, echo=FALSE}
+
+cm_df <- as.data.frame(as.table(confusion_matrix1))
+
+
+colnames(cm_df) <- c("Actual", "Predicted", "Frequency")
+
+gg_confusion_matrix <- ggplot(cm_df, aes(x = Actual, y = Predicted, fill = Frequency)) +
+  geom_tile() +  # Fill tiles based on the frequency
+  geom_text(aes(label = Frequency), color = "black") +  # Add frequency labels
+  scale_fill_gradient(low = "white", high = "steelblue") +  # Color gradient
+  labs(title = paste("Confusion Matrix\nAccuracy:", round(accuracy1 * 100, 2), "%"), x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5))
+
+print(gg_confusion_matrix)
+
+```
+
+<font size="4">random forest model(test data 1) </font>
+
+
+model building & Confusion matrix:
+
+Relatively better than logistic regression with decent amonut of true positve.
+```{r, echo=FALSE}
+test_data1$feedback_type <- as.factor(test_data1$feedback_type)
+
+rf_predictions_test1 <- predict(rf_model, newdata = test_data1, type = "prob")[,2]
+
+
+rf_predicted_classes_test1 <- ifelse(rf_predictions_test1 > 0.5, 1, 0)
+
+
+rf_predicted_classes_test1 <- factor(rf_predicted_classes_test1, levels = levels(test_data1$feedback_type))
+
+conf_matrix_rf_test1 <- confusionMatrix(rf_predicted_classes_test1, test_data1$feedback_type)
+
+cm_table_test1 <- as.data.frame(conf_matrix_rf_test1$table)
+
+
+names(cm_table_test1) <- c("Reference", "Prediction", "Frequency")
+
+gg_confusion_matrix_test1 <- ggplot(cm_table_test1, aes(x = Reference, y = Prediction, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for Random Forest (Test Data 1)", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(gg_confusion_matrix_test1)
+
+```
+
+
+<font size="4">SVM model(test data 1) </font>
+
+model building & Confusion matrix:
+
+Seems slightly better than random forest method since it has more true positve. but Meanwhile it has low true negative.
+```{r, echo=FALSE}
+
+
+svm_predictions_test1 <- predict(svm_model, newdata = test_data1, probability = TRUE)
+svm_probabilities_test1 <- attr(svm_predictions_test1, "probabilities")[,2]
+
+
+svm_predicted_classes_test1 <- ifelse(svm_probabilities_test1 > 0.5, 1, 0)
+
+
+svm_predicted_classes_test1 <- factor(svm_predicted_classes_test1, levels = levels(test_data1$feedback_type))
+
+svm_confusion_matrix_test1 <- table(Prediction = svm_predicted_classes_test1, Actual = test_data1$feedback_type)
+
+
+svm_cm_df_test1 <- as.data.frame(as.table(svm_confusion_matrix_test1))
+
+
+gg_svm_confusion_matrix_test1 <- ggplot(svm_cm_df_test1, aes(x = Actual, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), vjust = 1, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for SVM (Test Data 1)", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+print(gg_svm_confusion_matrix_test1)
+
+```
+
+
+<font size="4">XGboost model(test data 1) </font>
+
+model building & Confusion matrix:
+
+Best out of 4 models, it has the best performance so far.
+```{r, echo=FALSE}
+test_data1$feedback_type <- as.numeric(as.factor(test_data1$feedback_type)) - 1
+dtest1 <- xgb.DMatrix(data = as.matrix(test_data1[-ncol(test_data1)]), label = test_data1$feedback_type)
+xgb_predictions_test1 <- predict(xgb_model, dtest1)
+xgb_predicted_classes_test1 <- ifelse(xgb_predictions_test1 > 0.5, 1, 0)
+xgb_confusion_matrix_test1 <- table(Predicted = xgb_predicted_classes_test1, Actual = getinfo(dtest1, "label"))
+
+xgb_cm_df_test1 <- as.data.frame(as.table(xgb_confusion_matrix_test1))
+colnames(xgb_cm_df_test1) <- c("Actual", "Predicted", "Frequency")
+
+
+library(ggplot2)
+
+gg_confusion_matrix_test1 <- ggplot(xgb_cm_df_test1, aes(x = Actual, y = Predicted, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), vjust = 1, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for XGBoost Model (Test Data 1)", x = "Actual Label", y = "Predicted Label") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+print(gg_confusion_matrix_test1)
+```
+
+
+<font size="4">ROC graphs for test data 1 </font>
+
+Similar in section 4,  they all have similar performance, but in this case SVM and XGB have relatively high performance out of 4 models.
+
+```{r, echo=FALSE}
+
+true_labels_test1 <- test_data1$feedback_type
+
+
+roc_lr_test1 <- roc(true_labels_test1, predictions1)
+roc_rf_test1 <- roc(true_labels_test1, rf_predictions_test1) # Assuming binary:logistic
+roc_svm_test1 <- roc(true_labels_test1, svm_probabilities_test1)
+roc_xgb_test1 <- roc(true_labels_test1, xgb_predictions_test1)
+
+
+
+ggplot() + 
+  geom_line(data = data.frame(fpr = 1 - roc_lr_test1$specificities, tpr = roc_lr_test1$sensitivities), aes(x = fpr, y = tpr), color = "blue") +
+  geom_line(data = data.frame(fpr = 1 - roc_rf_test1$specificities, tpr = roc_rf_test1$sensitivities), aes(x = fpr, y = tpr), color = "red") +
+  geom_line(data = data.frame(fpr = 1 - roc_svm_test1$specificities, tpr = roc_svm_test1$sensitivities), aes(x = fpr, y = tpr), color = "green") +
+  geom_line(data = data.frame(fpr = 1 - roc_xgb_test1$specificities, tpr = roc_xgb_test1$sensitivities), aes(x = fpr, y = tpr), color = "purple") +
+  geom_abline(linetype = "dashed") +
+  labs(title = "ROC Curves for Different Models (Test Data 1)", x = "False Positive Rate", y = "True Positive Rate") +
+  annotate("text", x = 0.6, y = 0.4, label = paste("AUC LR:", round(auc(roc_lr_test1), 2)), color = "blue") +
+  annotate("text", x = 0.6, y = 0.35, label = paste("AUC RF:", round(auc(roc_rf_test1), 2)), color = "red") +
+  annotate("text", x = 0.6, y = 0.3, label = paste("AUC SVM:", round(auc(roc_svm_test1), 2)), color = "green") +
+  annotate("text", x = 0.6, y = 0.25, label = paste("AUC XGB:", round(auc(roc_xgb_test1), 2)), color = "purple") +
+  theme_minimal()
+
+```
+
+<font size="4">Test data 2 </font>
+
+load data:
+```{r, echo=FALSE}
+
+test_data2 <- readRDS('C:/STA141/test/test2.rds')
+test_data2 <- data.frame(
+  matrix(rnorm(n * p), nrow = n)
+)
+
+
+test_data2$feedback_type <- sample(0:1, n, replace = TRUE)
+
+```
+
+<font size="4">logistic regression(test data 2) </font>
+
+model building:
+```{r, echo=FALSE}
+
+predictions2 <- predict(model, newdata = test_data2, type = "response")
+predicted_classes2 <- ifelse(predictions2 > 0.5, 1, 0)
+
+confusion_matrix2 <- table(Predicted = predicted_classes2, Actual = test_data2$feedback_type)
+accuracy2 <- sum(diag(confusion_matrix2)) / sum(confusion_matrix2)
+print(confusion_matrix2)
+print(paste("Accuracy for test2:", accuracy2))
+
+```
+
+
+Confusion matrix:
+
+Poor Performance with accuracy only reach 48.2% compared to the test1.
+```{r, echo=FALSE}
+
+cm_df2 <- as.data.frame(as.table(confusion_matrix2))
+
+
+colnames(cm_df2) <- c("Actual", "Predicted", "Frequency")
+
+
+gg_confusion_matrix2 <- ggplot(cm_df2, aes(x = Actual, y = Predicted, fill = Frequency)) +
+  geom_tile() + 
+  geom_text(aes(label = Frequency), color = "black") +  # Add frequency labels
+  scale_fill_gradient(low = "white", high = "steelblue") +  # Color gradient
+  labs(title = paste("Confusion Matrix for Test Data 2\nAccuracy:", round(accuracy2 * 100, 2), "%"), x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for clarity
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5))
+
+
+print(gg_confusion_matrix2)
+```
+
+
+<font size="4">random forest model(test data 2) </font>
+
+Model building $ Confusion matrix:
+
+It shows average peformance since the true positive and true negative are relatively high.
+
+```{r, echo=FALSE}
+
+test_data2$feedback_type <- as.factor(test_data2$feedback_type)
+
+rf_predictions_test2 <- predict(rf_model, newdata = test_data2, type = "prob")[,2]
+
+
+rf_predicted_classes_test2 <- ifelse(rf_predictions_test2 > 0.5, 1, 0)
+
+
+rf_predicted_classes_test2 <- factor(rf_predicted_classes_test2, levels = levels(test_data2$feedback_type))
+
+conf_matrix_rf_test2 <- confusionMatrix(rf_predicted_classes_test2, test_data2$feedback_type)
+
+
+cm_table_test2 <- as.data.frame(conf_matrix_rf_test2$table)
+
+
+names(cm_table_test2) <- c("Reference", "Prediction", "Frequency")
+
+
+gg_confusion_matrix_test2 <- ggplot(cm_table_test2, aes(x = Reference, y = Prediction, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for Random Forest (Test Data 2)", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+print(gg_confusion_matrix_test2)
+```
+
+<font size="4">SVM model(test data 2) </font>
+
+
+Model building $ Confusion matrix:
+
+Very high true positive but relatively low true negative.
+```{r, echo=FALSE}
+
+svm_predictions_test2 <- predict(svm_model, newdata = test_data2, probability = TRUE)
+svm_probabilities_test2 <- attr(svm_predictions_test2, "probabilities")[,2]
+
+
+svm_predicted_classes_test2 <- ifelse(svm_probabilities_test2 > 0.5, 1, 0)
+
+
+svm_predicted_classes_test2 <- factor(svm_predicted_classes_test2, levels = levels(test_data2$feedback_type))
+
+svm_confusion_matrix_test2 <- table(Prediction = svm_predicted_classes_test2, Actual = test_data2$feedback_type)
+
+
+svm_cm_df_test2 <- as.data.frame(as.table(svm_confusion_matrix_test2))
+
+
+gg_svm_confusion_matrix_test2 <- ggplot(svm_cm_df_test2, aes(x = Actual, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), vjust = 1, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for SVM (Test Data 2)", x = "Actual", y = "Predicted") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+print(gg_svm_confusion_matrix_test2)
+
+```
+
+
+<font size="4">XGboost model(test data 2) </font>
+
+
+Model building $ Confusion matrix:
+
+Relatively low true positive and true negative compared to other models.
+
+```{r, echo=FALSE}
+
+test_data2$feedback_type <- as.numeric(as.factor(test_data2$feedback_type)) - 1
+dtest2 <- xgb.DMatrix(data = as.matrix(test_data2[-ncol(test_data2)]), label = test_data2$feedback_type)
+xgb_predictions_test2 <- predict(xgb_model, dtest2)
+xgb_predicted_classes_test2 <- ifelse(xgb_predictions_test2 > 0.5, 1, 0)
+xgb_confusion_matrix_test2 <- table(Predicted = xgb_predicted_classes_test2, Actual = getinfo(dtest2, "label"))
+
+xgb_cm_df_test2 <- as.data.frame(as.table(xgb_confusion_matrix_test2))
+colnames(xgb_cm_df_test2) <- c("Actual", "Predicted", "Frequency")
+
+
+gg_confusion_matrix_test2 <- ggplot(xgb_cm_df_test2, aes(x = Actual, y = Predicted, fill = Frequency)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Frequency), vjust = 1, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Confusion Matrix for XGBoost Model (Test Data 2)", x = "Actual Label", y = "Predicted Label") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+
+
+print(gg_confusion_matrix_test2)
+
+```
+
+
+<font size="4">ROC graphs for test data 2 </font>
+
+Similar in test data 1,  they all have similar performance, but in this case 4 of the model performance are really close with 0.02 different.
+
+
+```{r, echo=FALSE}
+set.seed(921424765)
+
+true_labels_test2 <- test_data2$feedback_type
+
+
+roc_lr_test2 <- roc(true_labels_test2, predictions2)
+roc_rf_test2 <- roc(true_labels_test2, rf_predictions_test2) # Assuming binary:logistic
+roc_svm_test2 <- roc(true_labels_test2, svm_probabilities_test2)
+roc_xgb_test2 <- roc(true_labels_test2, xgb_predictions_test2)
+
+
+ggplot() + 
+  geom_line(data = data.frame(fpr = 1 - roc_lr_test2$specificities, tpr = roc_lr_test2$sensitivities), aes(x = fpr, y = tpr), color = "blue") +
+  geom_line(data = data.frame(fpr = 1 - roc_rf_test2$specificities, tpr = roc_rf_test2$sensitivities), aes(x = fpr, y = tpr), color = "red") +
+  geom_line(data = data.frame(fpr = 1 - roc_svm_test2$specificities, tpr = roc_svm_test2$sensitivities), aes(x = fpr, y = tpr), color = "green") +
+  geom_line(data = data.frame(fpr = 1 - roc_xgb_test2$specificities, tpr = roc_xgb_test2$sensitivities), aes(x = fpr, y = tpr), color = "purple") +
+  geom_abline(linetype = "dashed") +
+  labs(title = "ROC Curves for Different Models (Test Data 1)", x = "False Positive Rate", y = "True Positive Rate") +
+  annotate("text", x = 0.6, y = 0.4, label = paste("AUC LR:", round(auc(roc_lr_test2), 2)), color = "blue") +
+  annotate("text", x = 0.6, y = 0.35, label = paste("AUC RF:", round(auc(roc_rf_test2), 2)), color = "red") +
+  annotate("text", x = 0.6, y = 0.3, label = paste("AUC SVM:", round(auc(roc_svm_test2), 2)), color = "green") +
+  annotate("text", x = 0.6, y = 0.25, label = paste("AUC XGB:", round(auc(roc_xgb_test2), 2)), color = "purple") +
+  theme_minimal()
+
+```
+
+<font size="4">Section 6:Discussion</font>
+
+1.Model could be improve more for accuracy: Since I tried several approach and my maximum accuracy only reach 0.60, I would considered to reduce more on data complexity(since apply PCA and still has poor performance), or apply multiple data integration at once would help to improve it more.
+
+2.Focusing on 2 specific model: I have tried too much method to compare AUC leads to less precise on every of them, I would considered to reduce method and mainly focus on random forest and XGB, which are two method I have relatively high accuracy overall.
+
+3.PCA implementaion: Even apply PCA in, model still has relatively poor performance, I guess revise the way I tried PCA might be a good start to improve my model. I believe apply PCA in the more proper way should raise AUC over 70%.
+
+
+
+
+<font size="6">Reference</font>
+
+
+Steinmetz, N.A., Zatka-Haas, P., Carandini, M. et al. Distributed coding of choice, action and engagement across the mouse brain. Nature 576, 266–273 (2019). https://doi.org/10.1038/s41586-019-1787-x
+
+ChatGPT - Assist with apply PCA, model building, confusion matrix and data explore.(whole chat logs on github)
+
+<font size="6">session information</font>
+```{r}
+sessionInfo()
+```
